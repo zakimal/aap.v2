@@ -182,7 +182,6 @@ func (m MessageTerminateNACK) Write() []byte {
 
 type MessageAssembleRequest struct {
 	from uint64
-	string
 }
 
 func (MessageAssembleRequest) Read(reader payload.Reader) (Message, error) {

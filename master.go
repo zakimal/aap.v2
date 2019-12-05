@@ -13,7 +13,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 )
 
 type Master struct {
@@ -28,7 +27,7 @@ type Master struct {
 	workers map[uint64]*Peer
 
 	sendQueue chan sendHandle
-	recvQueue sync.Map
+	recvQueue map[Opcode]receiveHandle
 
 	inactiveMap  map[uint64]bool
 	terminateMap map[uint64]bool
@@ -70,7 +69,7 @@ func NewMaster(id uint64) (*Master, error) {
 		port:         uint16(port),
 		workers:      make(map[uint64]*Peer),
 		sendQueue:    make(chan sendHandle, 128),
-		recvQueue:    sync.Map{},
+		recvQueue:    make(map[Opcode]receiveHandle),
 		inactiveMap:  make(map[uint64]bool),
 		terminateMap: make(map[uint64]bool),
 		assembleMap:  make(map[uint64]bool),
@@ -79,6 +78,51 @@ func NewMaster(id uint64) (*Master, error) {
 	}
 
 	master.init()
+
+	master.recvQueue[opcodeHelloWorker] = receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeHelloMaster] = receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodePEvalRequest] = receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodePEvalResponse] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeIncEvalUpdate] =  receiveHandle{
+		hub: make(chan Message, 128),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeNotifyInactive] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeTerminateRequest] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeTerminateACK] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeTerminateNACK] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeAssembleRequest] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	master.recvQueue[opcodeAssembleResponse] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
 
 	return &master, nil
 }
@@ -95,6 +139,18 @@ func (m *Master) init() {
 	opcodeTerminateNACK = RegisterMessage(NextAvailableOpcode(), (*MessageTerminateNACK)(nil))
 	opcodeAssembleRequest = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleRequest)(nil))
 	opcodeAssembleResponse = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleResponse)(nil))
+
+	log.Info().Msgf("opcodeHelloWorker=%d", opcodeHelloWorker)
+	log.Info().Msgf("opcodeHelloMaster=%d", opcodeHelloMaster)
+	log.Info().Msgf("opcodePEvalRequest=%d", opcodePEvalRequest)
+	log.Info().Msgf("opcodePEvalResponse=%d", opcodePEvalResponse)
+	log.Info().Msgf("opcodeIncEvalUpdate=%d", opcodeIncEvalUpdate)
+	log.Info().Msgf("opcodeNotifyInactive=%d", opcodeNotifyInactive)
+	log.Info().Msgf("opcodeTerminateRequest=%d", opcodeTerminateRequest)
+	log.Info().Msgf("opcodeTerminateACK=%d", opcodeTerminateACK)
+	log.Info().Msgf("opcodeTerminateNACK=%d", opcodeTerminateNACK)
+	log.Info().Msgf("opcodeAssembleRequest=%d", opcodeAssembleRequest)
+	log.Info().Msgf("opcodeAssembleResponse=%d", opcodeAssembleResponse)
 	go m.messageSender()
 }
 
@@ -189,11 +245,8 @@ func (m *Master) EncodeMessage(message Message) ([]byte, error) {
 }
 
 func (m *Master) Receive(opcode Opcode) <-chan Message {
-	c, _ := m.recvQueue.LoadOrStore(opcode, receiveHandle{
-		hub:  make(chan Message),
-		lock: make(chan struct{}, 1),
-	})
-	return c.(receiveHandle).hub
+	c, _ := m.recvQueue[opcode]
+	return c.hub
 }
 
 func (m *Master) Listen() {
@@ -238,6 +291,9 @@ func (m *Master) Dial(address string) (*Peer, error) {
 		pid := msg.(MessageHelloMaster).from
 		peer.id = pid
 		m.workers[pid] = peer
+		m.inactiveMap[pid] = false
+		m.terminateMap[pid] = false
+		m.assembleMap[pid] = false
 	}
 	return peer, nil
 }

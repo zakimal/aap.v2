@@ -50,47 +50,41 @@ func (p *Peer) messageReceiver() {
 		}
 		size, err := binary.ReadUvarint(reader)
 		if err != nil {
+			//log.Print(err)
 			p.DisconnectAsync()
 			continue
 		}
 		buf := make([]byte, int(size))
 		_, err = io.ReadFull(reader, buf)
 		if err != nil {
+			//log.Print(err)
 			p.DisconnectAsync()
 			continue
 		}
 		opcode, msg, err := p.DecodeMessage(buf)
 		if opcode == OpcodeNil || err != nil {
+			//log.Print(err)
 			p.DisconnectAsync()
 			continue
 		}
 
-		var Q interface{}
+		var Q receiveHandle
 
 		switch parent := p.parent.(type) {
 		case *Master:
-			Q, _ = parent.recvQueue.LoadOrStore(opcode, receiveHandle{
-				hub:  make(chan Message),
-				lock: make(chan struct{}, 1),
-			})
+			Q, _ = parent.recvQueue[opcode]
 		case *Worker:
-			Q, _ = parent.recvQueue.LoadOrStore(opcode, receiveHandle{
-				hub:  make(chan Message),
-				lock: make(chan struct{}, 1),
-			})
+			Q, _ = parent.recvQueue[opcode]
 		default:
 			panic("reachable")
 		}
 
-		recvQueue := Q.(receiveHandle)
+		recvQueue := Q
 		select {
 		case recvQueue.hub <- msg:
 			recvQueue.lock <- struct{}{}
-			//switch parent := p.parent.(type) {
-			//case *Worker:
-			//	log.Print(parent)
-			//	// TODO: adjust DS
-			//}
+			//op, _ := OpcodeFromMessage(msg)
+			//log.Debug().Msgf("#### recv op=%+v: %+v", op, msg)
 			<-recvQueue.lock
 		case <-time.After(3 * time.Second):
 			p.DisconnectAsync()

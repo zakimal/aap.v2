@@ -146,6 +146,7 @@ func IncEvalDijkstraFrom(updates map[int64]float64, shortest *Shortest, u graph.
 		if mid.dist > shortest.dist[k] {
 			continue // do not update to larger dist
 		}
+		shortest.dist[k] = mid.dist
 		mnid := mid.vertex.ID()
 		for _, v := range graph.VerticesOf(g.From(mnid)) {
 			vid := v.ID()

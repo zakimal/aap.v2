@@ -18,7 +18,6 @@ import (
 	"net"
 	"os"
 	"strconv"
-	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -35,7 +34,7 @@ type Worker struct {
 	peers map[uint64]*Peer
 
 	sendQueue chan sendHandle
-	recvQueue sync.Map
+	recvQueue map[Opcode]receiveHandle
 
 	round uint64
 
@@ -99,7 +98,7 @@ func NewWorker(id uint64) (*Worker, error) {
 		port:       uint16(port),
 		peers:      make(map[uint64]*Peer),
 		sendQueue:  make(chan sendHandle, 128),
-		recvQueue:  sync.Map{},
+		recvQueue:  make(map[Opcode]receiveHandle),
 		round:      0,
 		g:          g,
 		shortest:   path.Shortest{},
@@ -114,6 +113,54 @@ func NewWorker(id uint64) (*Worker, error) {
 	}
 
 	worker.init()
+
+	worker.recvQueue[opcodeHelloWorker] = receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeHelloMaster] = receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodePEvalRequest] = receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodePEvalResponse] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeIncEvalUpdate] =  receiveHandle{
+		hub: make(chan Message, 128),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeNotifyInactive] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeTerminateRequest] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeTerminateACK] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeTerminateNACK] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeAssembleRequest] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+	worker.recvQueue[opcodeAssembleResponse] =  receiveHandle{
+		hub: make(chan Message),
+		lock:make(chan struct {}, 1),
+	}
+
+	//check, exists := worker.recvQueue.Load(opcodeIncEvalUpdate)
+	//log.Printf("%+v: %v", check, exists)
 
 	return &worker, nil
 }
@@ -224,11 +271,8 @@ func (w *Worker) EncodeMessage(message Message) ([]byte, error) {
 }
 
 func (w *Worker) Receive(opcode Opcode) <-chan Message {
-	c, _ := w.recvQueue.LoadOrStore(opcode, receiveHandle{
-		hub:  make(chan Message),
-		lock: make(chan struct{}, 1),
-	})
-	return c.(receiveHandle).hub
+	c, _ := w.recvQueue[opcode]
+	return c.hub
 }
 
 func (w *Worker) Listen() {
@@ -323,137 +367,90 @@ func (w *Worker) Run() {
 		log.Info().Msgf("Send update message to worker %d", peer.id)
 	}
 
-	//if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
-	//	w.isInactive = 1
-	//	w.round += 1
-	//	goto WaitTerminateRequest
-	//}
-
+	ticker := time.NewTicker(1 * time.Second)
 IncrementalEvaluation:
-	for range time.Tick(1 * time.Second) {
-		log.Info().Msg("----- START INCEVAL -----")
-		length := len(w.Receive(opcodeIncEvalUpdate))
-		log.Info().Msgf("Receive %d updates", length)
-		updateMap := make(map[int64]float64)
-		min := uint64(math.MaxUint64)
-		max := uint64(0)
-		// TODO: FIX HERE
-		// IncEvalUpdateを受け取ったらlen()が非ゼロになると思っていたのだけれど
-		// メッセージは送られているはずなのに長さがゼロのままなのでだめ
-		for len(w.Receive(opcodeIncEvalUpdate)) > 0 {
-			msg := <-w.Receive(opcodeIncEvalUpdate)
-			from := msg.(MessageIncEvalUpdate).from
-			round := msg.(MessageIncEvalUpdate).round
-			vid := msg.(MessageIncEvalUpdate).vid
-			dist := msg.(MessageIncEvalUpdate).dist
-			log.Info().Msgf("Receive update message: from=%d, round=%d, vid=%d, dist=%f",
-				from, round, vid, dist)
-			if min > round {
-				min = round
+	for {
+		select {
+		case <- ticker.C:
+			if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
+				if w.isInactive == 1 {
+					if err := w.SendMessage(w.master, MessageNotifyInactive{from: w.id}); err != nil {
+						panic(err)
+					}
+				} else {
+					w.isInactive = 1
+				}
+				continue
 			}
-			if max < round {
-				max = round
-			}
-			if _, exists := updateMap[vid]; exists {
-				if dist < updateMap[vid] {
+			w.isInactive = 0
+			log.Info().Msgf("----- START INCEVAL %d -----", w.round)
+			incCh := w.Receive(opcodeIncEvalUpdate)
+			length := len(incCh)
+			log.Info().Msgf("Receive %d updates", length)
+			updateMap := make(map[int64]float64)
+			min := uint64(math.MaxUint64)
+			max := uint64(0)
+
+			for len(incCh) > 0 {
+				msg := <-incCh
+				from := msg.(MessageIncEvalUpdate).from
+				round := msg.(MessageIncEvalUpdate).round
+				vid := msg.(MessageIncEvalUpdate).vid
+				dist := msg.(MessageIncEvalUpdate).dist
+				log.Info().Msgf("Receive update message: from=%d, round=%d, vid=%d, dist=%f",
+					from, round, vid, dist)
+				if min > round {
+					min = round
+				}
+				if max < round {
+					max = round
+				}
+				if _, exists := updateMap[vid]; exists {
+					if dist < updateMap[vid] {
+						updateMap[vid] = dist
+					}
+				} else {
 					updateMap[vid] = dist
 				}
+			}
+			log.Info().Msgf("max: %d", max)
+			log.Info().Msgf("min: %d", min)
+			log.Info().Msgf("now: %d", w.round)
+			// TODO: IncEvalの実装がおかしい
+			updateMap = path.IncEvalDijkstraFrom(updateMap, &w.shortest, simple.NewVertex(0), w.g)
+			log.Info().Msgf("IncEval #%d: %+v, update=%+v", w.round, w.shortest, updateMap)
+			for vid, dist := range updateMap {
+				peer := w.peers[w.fot[w.g.Vertex(vid)]]
+				if err := w.SendMessage(peer, MessageIncEvalUpdate{
+					from:  mid,
+					round: w.round,
+					vid:   vid,
+					dist:  dist,
+				}); err != nil {
+					panic(err)
+				}
+			}
+			// TODO: adjust DS
+		case msg = <-w.Receive(opcodeTerminateRequest):
+			log.Info().Msgf("Receive Terminate Request from master %d", msg.(MessageTerminateRequest).from)
+			if len(w.Receive(opcodeIncEvalUpdate)) != 0 {
+				w.isInactive = 0
+				if err := w.SendMessage(w.master, MessageTerminateNACK{from: w.id}); err != nil {
+					panic(err)
+				}
 			} else {
-				updateMap[vid] = dist
+				if err := w.SendMessage(w.master, MessageTerminateACK{from: w.id}); err != nil {
+					panic(err)
+				}
+				break IncrementalEvaluation
 			}
-		}
-		log.Info().Msgf("max: %d, min: %d, now: %d", max, min, w.round)
-		updateMap = path.IncEvalDijkstraFrom(updateMap, &w.shortest, simple.NewVertex(0), w.g)
-		log.Info().Msgf("IncEval #%d: %+v, update=%+v", w.round, w.shortest, updateMap)
-		for vid, dist := range updateMap {
-			peer := w.peers[w.fot[w.g.Vertex(vid)]]
-			if err := w.SendMessage(peer, MessageIncEvalUpdate{
-				from:  mid,
-				round: w.round,
-				vid:   vid,
-				dist:  dist,
-			}); err != nil {
-				panic(err)
-			}
-		}
-		// TODO: adjust DS
-		w.round += 1
-		if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
-			w.isInactive = 1
-			break IncrementalEvaluation
-		}
-	}
-	//for {
-	//	ticker := time.NewTicker(time.Second)
-	//	select {
-	//	case <-ticker.C: // elapsed DS time
-	//		log.Info().Msg("----- START INCEVAL -----")
-	//		length := len(w.Receive(opcodeIncEvalUpdate))
-	//		log.Info().Msgf("Receive %d updates", length)
-	//		updateMap := make(map[int64]float64)
-	//		min := uint64(math.MaxUint64)
-	//		max := uint64(0)
-	//		for msg := range w.Receive(opcodeIncEvalUpdate) {
-	//			from := msg.(MessageIncEvalUpdate).from
-	//			round := msg.(MessageIncEvalUpdate).round
-	//			vid := msg.(MessageIncEvalUpdate).vid
-	//			dist := msg.(MessageIncEvalUpdate).dist
-	//			log.Info().Msgf("Receive update message: from=%d, round=%d, vid=%d, dist=%f",
-	//				from, round, vid, dist)
-	//			if min > round {
-	//				min = round
-	//			}
-	//			if max < round {
-	//				max = round
-	//			}
-	//			if _, exists := updateMap[vid]; exists {
-	//				if dist < updateMap[vid] {
-	//					updateMap[vid] = dist
-	//				}
-	//			} else {
-	//				updateMap[vid] = dist
-	//			}
-	//		}
-	//		log.Info().Msgf("max: %d, min: %d, now: %d", max, min, w.round)
-	//		updateMap = path.IncEvalDijkstraFrom(updateMap, &w.shortest, w.g.Vertex(0), w.g)
-	//		log.Info().Msgf("IncEval #%d: %+v, update=%+v", w.round, w.shortest, updateMap)
-	//		for vid, dist := range updateMap {
-	//			peer := w.peers[w.fot[w.g.Vertex(vid)]]
-	//			if err := w.SendMessage(peer, MessageIncEvalUpdate{
-	//				from:  mid,
-	//				round: w.round,
-	//				vid:   vid,
-	//				dist:  dist,
-	//			}); err != nil {
-	//				panic(err)
-	//			}
-	//		}
-	//		// TODO: adjust DS
-	//		w.round += 1
-	//		if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
-	//			w.isInactive = 1
-	//			goto WaitTerminateRequest
-	//		}
-	//	}
-	//}
-
-//WaitTerminateRequest:
-	msg = <-w.Receive(opcodeTerminateRequest)
-	log.Info().Msgf("Receive Terminate Request from master %d", msg.(MessageTerminateRequest).from)
-	if len(w.Receive(opcodeIncEvalUpdate)) != 0 {
-		w.isInactive = 0
-		if err := w.SendMessage(w.master, MessageTerminateNACK{from: w.id}); err != nil {
-			panic(err)
-		}
-		goto IncrementalEvaluation
-	} else {
-		if err := w.SendMessage(w.master, MessageTerminateACK{from: w.id}); err != nil {
-			panic(err)
 		}
 	}
 
 	msg = <-w.Receive(opcodeAssembleRequest)
 	log.Info().Msgf("Receive Assemble Request from master %d", msg.(MessageAssembleRequest).from)
+
+	// TODO: masterにIncEvalに対応できる状態がない
 	if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
 		if err := w.SendMessage(w.master, MessageAssembleResponse{
 			from:   w.id,

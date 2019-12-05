@@ -6,13 +6,15 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 	"io"
 	"os"
+	"time"
 )
 
 var logger = zerolog.New(os.Stderr).With().Timestamp().Caller().Logger()
 
 func init() {
+	zerolog.TimeFieldFormat = time.RFC3339Nano
 	if terminal.IsTerminal(int(os.Stdout.Fd())) {
-		logger = logger.Output(zerolog.ConsoleWriter{Out: os.Stderr})
+		logger = logger.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: "15:04:05.000000"})
 	}
 }
 
