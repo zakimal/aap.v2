@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"time"
 )
 
 type Master struct {
@@ -80,47 +81,47 @@ func NewMaster(id uint64) (*Master, error) {
 	master.init()
 
 	master.recvQueue[opcodeHelloWorker] = receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeHelloMaster] = receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodePEvalRequest] = receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodePEvalResponse] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeIncEvalUpdate] =  receiveHandle{
-		hub: make(chan Message, 128),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeNotifyInactive] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeTerminateRequest] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeTerminateACK] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeTerminateNACK] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeAssembleRequest] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeAssembleResponse] =  receiveHandle{
-		hub: make(chan Message),
+		hub: make(chan Message, 1024),
 		lock:make(chan struct {}, 1),
 	}
 
@@ -139,18 +140,6 @@ func (m *Master) init() {
 	opcodeTerminateNACK = RegisterMessage(NextAvailableOpcode(), (*MessageTerminateNACK)(nil))
 	opcodeAssembleRequest = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleRequest)(nil))
 	opcodeAssembleResponse = RegisterMessage(NextAvailableOpcode(), (*MessageAssembleResponse)(nil))
-
-	log.Info().Msgf("opcodeHelloWorker=%d", opcodeHelloWorker)
-	log.Info().Msgf("opcodeHelloMaster=%d", opcodeHelloMaster)
-	log.Info().Msgf("opcodePEvalRequest=%d", opcodePEvalRequest)
-	log.Info().Msgf("opcodePEvalResponse=%d", opcodePEvalResponse)
-	log.Info().Msgf("opcodeIncEvalUpdate=%d", opcodeIncEvalUpdate)
-	log.Info().Msgf("opcodeNotifyInactive=%d", opcodeNotifyInactive)
-	log.Info().Msgf("opcodeTerminateRequest=%d", opcodeTerminateRequest)
-	log.Info().Msgf("opcodeTerminateACK=%d", opcodeTerminateACK)
-	log.Info().Msgf("opcodeTerminateNACK=%d", opcodeTerminateNACK)
-	log.Info().Msgf("opcodeAssembleRequest=%d", opcodeAssembleRequest)
-	log.Info().Msgf("opcodeAssembleResponse=%d", opcodeAssembleResponse)
 	go m.messageSender()
 }
 
@@ -319,12 +308,14 @@ func (m *Master) Run() {
 	log.Info().Msg("Broadcast PEval Request")
 
 WaitInactive:
+	log.Debug().Msgf("master is in WaitInactive")
 	for {
 		select {
 		case msg := <-m.Receive(opcodeNotifyInactive):
 			wid := msg.(MessageNotifyInactive).from
 			log.Info().Msgf("Worker %d notifies inactive", wid)
 			m.inactiveMap[wid] = true
+			log.Debug().Msgf("inactiveMap: %+v", m.inactiveMap)
 			flag := true
 			for _, st := range m.inactiveMap {
 				flag = flag && st
@@ -342,6 +333,7 @@ WaitInactive:
 	}
 
 WaitTerminateAck:
+	log.Debug().Msgf("master is in WaitTerminateAck: %+v", m.terminateMap)
 	for {
 		select {
 		case msg := <-m.Receive(opcodeTerminateACK):
@@ -353,17 +345,19 @@ WaitTerminateAck:
 				flag = flag && st
 			}
 			if flag {
+				log.Info().Msgf("All workers are inactive, so master will assemble result")
 				goto WaitAssembleResponse
 			}
 		case msg := <-m.Receive(opcodeTerminateNACK):
 			wid := msg.(MessageTerminateNACK).from
-			log.Info().Msgf("Worker %d is active", wid)
+			log.Info().Msgf("Worker %d is now active, so the calculation will not terminate yet", wid)
 			m.inactiveMap[wid] = false
 			goto WaitInactive
 		}
 	}
 
 WaitAssembleResponse:
+	log.Debug().Msgf("master is in WaitAssembleResponse")
 	for _, worker := range m.workers {
 		if err := m.SendMessage(worker, MessageAssembleRequest{from: m.id}); err != nil {
 			panic(err)
@@ -377,16 +371,33 @@ WaitAssembleResponse:
 			m.assembleMap[wid] = true
 			log.Info().Msgf("Worker %d returns partial result: %+v", wid, result)
 			flag := true
-			for _, st := range m.terminateMap {
+			for _, st := range m.assembleMap {
 				flag = flag && st
 			}
 			if flag {
 				goto Terminate
 			}
+		case <- time.After(3 * time.Second):
+			flag := true
+			for wid, st := range m.assembleMap {
+				if !st {
+					m.inactiveMap[wid] = false
+					m.terminateMap[wid] = false
+					flag = false
+				}
+				//flag = flag && st
+			}
+			if flag {
+				goto Terminate
+			} else {
+				goto WaitInactive
+			}
 		}
 	}
 
 Terminate:
+	log.Debug().Msgf("master is in Terminate")
+	// TODO: merge partial result
 	log.Info().Msg("Bye ;)")
 }
 

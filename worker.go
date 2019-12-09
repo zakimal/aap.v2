@@ -287,7 +287,7 @@ func (w *Worker) Listen() {
 		if err != nil {
 			continue
 		}
-		log.Info().Msgf("accept connection from %s", conn.LocalAddr().String())
+		log.Info().Msgf("Accept connection from %s", conn.LocalAddr().String())
 		peer := NewPeer(conn, w)
 		peer.init()
 		select {
@@ -341,9 +341,15 @@ func (w *Worker) DisconnectAsync(peer *Peer) <-chan struct{} {
 }
 
 func (w *Worker) Run() {
+
+	log.Printf("fif: %+v", w.fif)
+	log.Printf("fit: %+v", w.fit)
+	log.Printf("fof: %+v", w.fof)
+	log.Printf("fot: %+v", w.fot)
+
 	msg := <-w.Receive(opcodePEvalRequest)
 	mid := msg.(MessagePEvalRequest).from
-	log.Info().Msgf("Receive PEval Request from master %d", mid)
+	log.Info().Msgf("<- Receive PEval Request from master %d", mid)
 
 	if w.master.id != mid {
 		panic(fmt.Sprintf("PEval Request from wrong master: expected: %d, got: %d", w.master.id, mid))
@@ -352,22 +358,25 @@ func (w *Worker) Run() {
 	log.Info().Msg("----- START PEVAL -----")
 	var updateMap map[int64]float64
 	w.shortest, updateMap = path.PEvalDijkstraFrom(w.g.Vertex(0), w.g)
-	log.Info().Msgf("PEval: %+v, update=%+v", w.shortest, updateMap)
+	log.Info().Msgf("PEval: %v, update=%v", w.shortest.WeightToAllVertices(), updateMap)
 
+	// TODO: updateで回すのがおかしい
 	for vid, dist := range updateMap {
-		peer := w.peers[w.fot[w.g.Vertex(vid)]]
-		if err := w.SendMessage(peer, MessageIncEvalUpdate{
-			from:  mid,
-			round: w.round,
-			vid:   vid,
-			dist:  dist,
-		}); err != nil {
-			panic(err)
+		if pid, ok := w.fot[w.g.Vertex(vid)]; ok {
+			peer := w.peers[pid]
+			if err := w.SendMessage(peer, MessageIncEvalUpdate{
+				from:  w.id,
+				round: w.round,
+				vid:   vid,
+				dist:  dist,
+			}); err != nil {
+				panic(err)
+			}
+			log.Info().Msgf("-> Send update message to worker %d", peer.id)
 		}
-		log.Info().Msgf("Send update message to worker %d", peer.id)
 	}
 
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(2 * time.Millisecond)
 IncrementalEvaluation:
 	for {
 		select {
@@ -377,6 +386,7 @@ IncrementalEvaluation:
 					if err := w.SendMessage(w.master, MessageNotifyInactive{from: w.id}); err != nil {
 						panic(err)
 					}
+					log.Info().Msgf("-> Send Notify Inactive to master %d", w.master.id)
 				} else {
 					w.isInactive = 1
 				}
@@ -386,7 +396,7 @@ IncrementalEvaluation:
 			log.Info().Msgf("----- START INCEVAL %d -----", w.round)
 			incCh := w.Receive(opcodeIncEvalUpdate)
 			length := len(incCh)
-			log.Info().Msgf("Receive %d updates", length)
+			log.Info().Msgf("<- Receive %d updates", length)
 			updateMap := make(map[int64]float64)
 			min := uint64(math.MaxUint64)
 			max := uint64(0)
@@ -397,7 +407,7 @@ IncrementalEvaluation:
 				round := msg.(MessageIncEvalUpdate).round
 				vid := msg.(MessageIncEvalUpdate).vid
 				dist := msg.(MessageIncEvalUpdate).dist
-				log.Info().Msgf("Receive update message: from=%d, round=%d, vid=%d, dist=%f",
+				log.Info().Msgf(" + from=%d, round=%d, vid=%d, dist=%f",
 					from, round, vid, dist)
 				if min > round {
 					min = round
@@ -416,39 +426,46 @@ IncrementalEvaluation:
 			log.Info().Msgf("max: %d", max)
 			log.Info().Msgf("min: %d", min)
 			log.Info().Msgf("now: %d", w.round)
-			// TODO: IncEvalの実装がおかしい
 			updateMap = path.IncEvalDijkstraFrom(updateMap, &w.shortest, simple.NewVertex(0), w.g)
-			log.Info().Msgf("IncEval #%d: %+v, update=%+v", w.round, w.shortest, updateMap)
+			log.Info().Msgf("IncEval #%d: %v, update=%v", w.round, w.shortest.WeightToAllVertices(), updateMap)
+
 			for vid, dist := range updateMap {
-				peer := w.peers[w.fot[w.g.Vertex(vid)]]
-				if err := w.SendMessage(peer, MessageIncEvalUpdate{
-					from:  mid,
-					round: w.round,
-					vid:   vid,
-					dist:  dist,
-				}); err != nil {
-					panic(err)
+				if pid, ok := w.fot[w.g.Vertex(vid)]; ok {
+					peer := w.peers[pid]
+					if err := w.SendMessage(peer, MessageIncEvalUpdate{
+						from:  w.id,
+						round: w.round,
+						vid:   vid,
+						dist:  dist,
+					}); err != nil {
+						panic(err)
+					}
+					log.Info().Msgf("-> Send update message to worker %d", peer.id)
 				}
 			}
+
 			// TODO: adjust DS
+			w.round += 1
 		case msg = <-w.Receive(opcodeTerminateRequest):
-			log.Info().Msgf("Receive Terminate Request from master %d", msg.(MessageTerminateRequest).from)
+			log.Info().Msgf("<- Receive Terminate Request from master %d", msg.(MessageTerminateRequest).from)
 			if len(w.Receive(opcodeIncEvalUpdate)) != 0 {
 				w.isInactive = 0
 				if err := w.SendMessage(w.master, MessageTerminateNACK{from: w.id}); err != nil {
 					panic(err)
 				}
+				log.Info().Msgf("-> Send Terminate NACK to master %d", w.master.id)
 			} else {
 				if err := w.SendMessage(w.master, MessageTerminateACK{from: w.id}); err != nil {
 					panic(err)
 				}
+				log.Info().Msgf("-> Send Terminate ACK to master %d", w.master.id)
 				break IncrementalEvaluation
 			}
 		}
 	}
 
 	msg = <-w.Receive(opcodeAssembleRequest)
-	log.Info().Msgf("Receive Assemble Request from master %d", msg.(MessageAssembleRequest).from)
+	log.Info().Msgf("<- Receive Assemble Request from master %d", msg.(MessageAssembleRequest).from)
 
 	// TODO: masterにIncEvalに対応できる状態がない
 	if len(w.Receive(opcodeIncEvalUpdate)) == 0 {
@@ -459,6 +476,7 @@ IncrementalEvaluation:
 			panic(err)
 		}
 	} else {
+		w.isInactive = 0
 		goto IncrementalEvaluation
 	}
 
