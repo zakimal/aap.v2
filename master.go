@@ -357,6 +357,9 @@ WaitTerminateAck:
 	}
 
 WaitAssembleResponse:
+	var (
+		r0, r1, r2 map[int64]float64
+	)
 	log.Debug().Msgf("master is in WaitAssembleResponse")
 	for _, worker := range m.workers {
 		if err := m.SendMessage(worker, MessageAssembleRequest{from: m.id}); err != nil {
@@ -369,6 +372,11 @@ WaitAssembleResponse:
 			wid := msg.(MessageAssembleResponse).from
 			result := msg.(MessageAssembleResponse).result
 			m.assembleMap[wid] = true
+			switch wid {
+			case 0: r0 = result
+			case 1: r1 = result
+			case 2: r2 = result
+			}
 			log.Info().Msgf("Worker %d returns partial result: %+v", wid, result)
 			flag := true
 			for _, st := range m.assembleMap {
@@ -398,6 +406,29 @@ WaitAssembleResponse:
 Terminate:
 	log.Debug().Msgf("master is in Terminate")
 	// TODO: merge partial result
+	result := make(map[int64]float64)
+	for k, v := range r0 {
+		result[k] = v
+	}
+	for k, v := range r1 {
+		if v < result[k] {
+			result[k] = v
+		}
+	}
+	for k, v := range r2 {
+		if v < result[k] {
+			result[k] = v
+		}
+	}
+
+	resultFile, err := os.OpenFile("result.csv", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	if err != nil {
+		panic(err)
+	}
+	defer resultFile.Close()
+	for k, v := range result {
+		fmt.Fprintf(resultFile, "%d,%f\n", k, v)
+	}
 	log.Info().Msg("Bye ;)")
 }
 

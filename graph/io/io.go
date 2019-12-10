@@ -78,14 +78,16 @@ func BuildEdgeCutWeightedDirectedGraph(id uint64) (graph.Graph, map[graph.Vertex
 	defer vertices.Close()
 
 	verticesReader := csv.NewReader(vertices)
-	sinners, err := verticesReader.Read()
-	if err != nil {
-		panic(err)
-	}
-	// TODO: setを使わない
+	verticesReader.Read() // skip header
 	inners := set.NewVertexSet() // in-partition
-	for _, v := range sinners {
-		vid, err := strconv.ParseInt(v, 10, 64)
+	for {
+		svid, err := verticesReader.Read()
+		if err == io.EOF {
+			break
+		} else if err != nil {
+			panic(err)
+		}
+		vid, err := strconv.ParseInt(svid[0], 10, 64)
 		if err != nil {
 			panic(err)
 		}
@@ -110,7 +112,15 @@ func BuildEdgeCutWeightedDirectedGraph(id uint64) (graph.Graph, map[graph.Vertex
 		for vs.Next() {
 			if inners.Has(vs.Vertex()) {
 				fif[o] = possessionMap[o.ID()]
-				fit[vs.Vertex()] = possessionMap[vs.Vertex().ID()]
+			}
+		}
+	}
+
+	for _, i := range inners {
+		vs := g.To(i.ID())
+		for vs.Next() {
+			if outers.Has(vs.Vertex()) {
+				fit[i] = possessionMap[i.ID()]
 			}
 		}
 	}
@@ -119,8 +129,16 @@ func BuildEdgeCutWeightedDirectedGraph(id uint64) (graph.Graph, map[graph.Vertex
 		vs := g.To(o.ID())
 		for vs.Next() {
 			if inners.Has(vs.Vertex()) {
-				fof[vs.Vertex()] = possessionMap[vs.Vertex().ID()]
 				fot[o] = possessionMap[o.ID()]
+			}
+		}
+	}
+
+	for _, i := range inners {
+		vs := g.From(i.ID())
+		for vs.Next() {
+			if outers.Has(vs.Vertex()) {
+				fof[i] = possessionMap[i.ID()]
 			}
 		}
 	}

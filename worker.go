@@ -364,6 +364,14 @@ func (w *Worker) Run() {
 	for vid, dist := range updateMap {
 		if pid, ok := w.fot[w.g.Vertex(vid)]; ok {
 			peer := w.peers[pid]
+
+			//log.Debug().Msgf("vid: %d, peer: %+v", vid, peer)
+
+			// TODO: fix fif/fit/fof/fot
+			if peer == nil {
+				continue
+			}
+
 			if err := w.SendMessage(peer, MessageIncEvalUpdate{
 				from:  w.id,
 				round: w.round,
@@ -432,6 +440,14 @@ IncrementalEvaluation:
 			for vid, dist := range updateMap {
 				if pid, ok := w.fot[w.g.Vertex(vid)]; ok {
 					peer := w.peers[pid]
+
+					//log.Debug().Msgf("vid: %d, peer: %+v", vid, peer)
+
+					// TODO: fix fif/fit/fof/fot
+					if peer == nil {
+						continue
+					}
+
 					if err := w.SendMessage(peer, MessageIncEvalUpdate{
 						from:  w.id,
 						round: w.round,
