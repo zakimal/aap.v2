@@ -300,6 +300,7 @@ func (m *Master) DisconnectAsync(peer *Peer) <-chan struct{} {
 }
 
 func (m *Master) Run() {
+	start := time.Now()
 	for _, worker := range m.workers {
 		if err := m.SendMessage(worker, MessagePEvalRequest{from: m.id}); err != nil {
 			panic(err)
@@ -429,6 +430,8 @@ Terminate:
 	for k, v := range result {
 		fmt.Fprintf(resultFile, "%d,%f\n", k, v)
 	}
+	end := time.Now()
+	fmt.Printf("%f second\n",(end.Sub(start)).Seconds())
 	log.Info().Msg("Bye ;)")
 }
 

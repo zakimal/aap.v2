@@ -384,7 +384,7 @@ func (w *Worker) Run() {
 		}
 	}
 
-	ticker := time.NewTicker(2 * time.Millisecond)
+	ticker := time.NewTicker(5 * time.Nanosecond)
 IncrementalEvaluation:
 	for {
 		select {
