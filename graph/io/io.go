@@ -21,14 +21,18 @@ func BuildEdgeCutWeightedDirectedGraph(id uint64) (graph.Graph, map[graph.Vertex
 		fof = make(map[graph.Vertex]uint64)
 	)
 	possessionMap := make(map[int64]uint64)
-	possession, err := os.Open("/Users/zak/go/src/github.com/zakimal/aap.v2/data/weighted_directed/edge_cut/possession.csv")
+
+	// local configuration
+	//possession, err := os.Open("/Users/zak/go/src/github.com/zakimal/aap.v2/data/weighted_directed/edge_cut/possession.csv")
+
+	possession, err := os.Open("./possession.csv")
 	if err != nil {
 		panic(err)
 	}
 	defer possession.Close()
 
 	possessionReader := csv.NewReader(possession)
-	possessionReader.Read() // skip header
+	//possessionReader.Read() // skip header
 	for {
 		record, err := possessionReader.Read()
 		if err == io.EOF {
@@ -44,14 +48,18 @@ func BuildEdgeCutWeightedDirectedGraph(id uint64) (graph.Graph, map[graph.Vertex
 	}
 
 	// read edges
-	edges, err := os.Open(fmt.Sprintf("/Users/zak/go/src/github.com/zakimal/aap.v2/data/weighted_directed/edge_cut/edges/%d.csv", id))
+
+	// local configuration
+	//edges, err := os.Open(fmt.Sprintf("/Users/zak/go/src/github.com/zakimal/aap.v2/data/weighted_directed/edge_cut/edges/%d.edgelist.csv", id))
+
+	edges, err := os.Open(fmt.Sprintf("%d.edgelist.csv", id))
 	if err != nil {
 		panic(err)
 	}
 	defer edges.Close()
 
 	edgeReader := csv.NewReader(edges)
-	edgeReader.Read() // skip header
+	//edgeReader.Read() // skip header
 	for {
 		record, err := edgeReader.Read()
 		if err == io.EOF {
@@ -71,27 +79,39 @@ func BuildEdgeCutWeightedDirectedGraph(id uint64) (graph.Graph, map[graph.Vertex
 		g.AddWeightedEdge(we)
 	}
 
-	vertices, err := os.Open(fmt.Sprintf("/Users/zak/go/src/github.com/zakimal/aap.v2/data/weighted_directed/edge_cut/vertices/%d.csv", id))
+	// local configuration
+	//vertices, err := os.Open(fmt.Sprintf("/Users/zak/go/src/github.com/zakimal/aap.v2/data/weighted_directed/edge_cut/vertices/%d.nodelist.csv", id))
+
+	vertices, err := os.Open(fmt.Sprintf("%d.nodelist.csv", id))
 	if err != nil {
 		panic(err)
 	}
 	defer vertices.Close()
 
-	verticesReader := csv.NewReader(vertices)
-	verticesReader.Read() // skip header
+	//verticesReader := csv.NewReader(vertices)
+	//verticesReader.Read() // skip header
 	inners := set.NewVertexSet() // in-partition
-	for {
-		svid, err := verticesReader.Read()
-		if err == io.EOF {
-			break
-		} else if err != nil {
-			panic(err)
+	//for {
+	//	svid, err := verticesReader.Read()
+	//	if err == io.EOF {
+	//		break
+	//	} else if err != nil {
+	//		panic(err)
+	//	}
+	//	vid, err := strconv.ParseInt(svid[0], 10, 64)
+	//	if err != nil {
+	//		panic(err)
+	//	}
+	//	inners.Add(g.Vertex(vid))
+	//}
+
+	for v, w := range possessionMap {
+		if w == id {
+			if g.Vertex(v) == nil {
+				g.AddVertex(simple.Vertex(v))
+			}
+			inners.Add(g.Vertex(v))
 		}
-		vid, err := strconv.ParseInt(svid[0], 10, 64)
-		if err != nil {
-			panic(err)
-		}
-		inners.Add(g.Vertex(vid))
 	}
 
 	all := g.Vertices()

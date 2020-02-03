@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -39,7 +40,7 @@ type Master struct {
 }
 
 func NewMaster(id uint64) (*Master, error) {
-	config, err := os.Open(fmt.Sprintf("config/workers/%d.csv", id))
+	config, err := os.Open(fmt.Sprintf("../config/workers/%d.csv", id))
 	if err != nil {
 		panic(err)
 	}
@@ -50,8 +51,9 @@ func NewMaster(id uint64) (*Master, error) {
 	if err != nil {
 		panic(err)
 	}
-	host := record[0]
-	port, err := strconv.ParseInt(record[1], 10, 16)
+	addr := strings.Split(record[0], ":")
+	host := addr[0]
+	port, err := strconv.ParseInt(addr[1], 10, 16)
 	if err != nil {
 		panic(err)
 	}
@@ -69,7 +71,7 @@ func NewMaster(id uint64) (*Master, error) {
 		host:         host,
 		port:         uint16(port),
 		workers:      make(map[uint64]*Peer),
-		sendQueue:    make(chan sendHandle, 128),
+		sendQueue:    make(chan sendHandle, 128*128),
 		recvQueue:    make(map[Opcode]receiveHandle),
 		inactiveMap:  make(map[uint64]bool),
 		terminateMap: make(map[uint64]bool),
@@ -81,47 +83,47 @@ func NewMaster(id uint64) (*Master, error) {
 	master.init()
 
 	master.recvQueue[opcodeHelloWorker] = receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeHelloMaster] = receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodePEvalRequest] = receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodePEvalResponse] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeIncEvalUpdate] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeNotifyInactive] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeTerminateRequest] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeTerminateACK] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeTerminateNACK] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeAssembleRequest] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	master.recvQueue[opcodeAssembleResponse] =  receiveHandle{
-		hub: make(chan Message, 1024),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 
@@ -358,9 +360,10 @@ WaitTerminateAck:
 	}
 
 WaitAssembleResponse:
-	var (
-		r0, r1, r2 map[int64]float64
-	)
+	results := make(map[uint64]map[int64]float64)
+	for wid := range m.workers {
+		results[wid] = make(map[int64]float64)
+	}
 	log.Debug().Msgf("master is in WaitAssembleResponse")
 	for _, worker := range m.workers {
 		if err := m.SendMessage(worker, MessageAssembleRequest{from: m.id}); err != nil {
@@ -373,12 +376,8 @@ WaitAssembleResponse:
 			wid := msg.(MessageAssembleResponse).from
 			result := msg.(MessageAssembleResponse).result
 			m.assembleMap[wid] = true
-			switch wid {
-			case 0: r0 = result
-			case 1: r1 = result
-			case 2: r2 = result
-			}
-			log.Info().Msgf("Worker %d returns partial result: %+v", wid, result)
+			results[wid] = result
+			//log.Info().Msgf("Worker %d returns partial result: %+v", wid, result)
 			flag := true
 			for _, st := range m.assembleMap {
 				flag = flag && st
@@ -406,22 +405,20 @@ WaitAssembleResponse:
 
 Terminate:
 	log.Debug().Msgf("master is in Terminate")
-	// TODO: merge partial result
+	end := time.Now()
 	result := make(map[int64]float64)
-	for k, v := range r0 {
-		result[k] = v
-	}
-	for k, v := range r1 {
-		if v < result[k] {
-			result[k] = v
+	for wid := range results {
+		pr := results[wid]
+		for vid, cost := range pr {
+			if c, exists := result[vid]; !exists {
+				result[vid] = cost
+			} else {
+				if cost < c {
+					result[vid] = cost
+				}
+			}
 		}
 	}
-	for k, v := range r2 {
-		if v < result[k] {
-			result[k] = v
-		}
-	}
-
 	resultFile, err := os.OpenFile("result.csv", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	if err != nil {
 		panic(err)
@@ -430,7 +427,6 @@ Terminate:
 	for k, v := range result {
 		fmt.Fprintf(resultFile, "%d,%f\n", k, v)
 	}
-	end := time.Now()
 	fmt.Printf("%f second\n",(end.Sub(start)).Seconds())
 	log.Info().Msg("Bye ;)")
 }

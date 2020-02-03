@@ -6,6 +6,7 @@ import (
 	"fmt"
 	aap_v2 "github.com/zakimal/aap.v2"
 	"github.com/zakimal/aap.v2/log"
+	"io"
 	"os"
 	"time"
 )
@@ -28,13 +29,22 @@ func main() {
 
 		time.Sleep(time.Second)
 
-		config, err := os.Open(fmt.Sprintf("config/peers/%d.csv", master.ID()))
+		config, err := os.Open(fmt.Sprintf("../config/peers/%d.csv", master.ID()))
 		if err != nil {
 			panic(err)
 		}
 		defer config.Close()
 		peerReader := csv.NewReader(config)
-		peers, err := peerReader.Read()
+		peers := make([]string, 0)
+		for {
+			peer, err := peerReader.Read()
+			if err == io.EOF {
+				break
+			} else if err != nil {
+				panic(err)
+			}
+			peers = append(peers, peer[0])
+		}
 		if err != nil {
 			panic(err)
 		}
@@ -61,7 +71,7 @@ func main() {
 
 		time.Sleep(time.Second)
 
-		config, err := os.Open(fmt.Sprintf("config/peers/%d.csv", worker.ID()))
+		config, err := os.Open(fmt.Sprintf("../config/peers/%d.csv", worker.ID()))
 		if err != nil {
 			panic(err)
 		}

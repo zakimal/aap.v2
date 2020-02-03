@@ -18,6 +18,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -65,7 +66,12 @@ type Worker struct {
 }
 
 func NewWorker(id uint64) (*Worker, error) {
-	config, err := os.Open(fmt.Sprintf("config/workers/%d.csv", id))
+	// TODO: 絶対PATHから相対PATHに
+
+	// local configuration
+	//config, err := os.Open(fmt.Sprintf("config/workers/%d.csv", id))
+
+	config, err := os.Open(fmt.Sprintf("../config/workers/%d.csv", id))
 	if err != nil {
 		panic(err)
 	}
@@ -76,8 +82,9 @@ func NewWorker(id uint64) (*Worker, error) {
 	if err != nil {
 		panic(err)
 	}
-	host := record[0]
-	port, err := strconv.ParseInt(record[1], 10, 16)
+	addr := strings.Split(record[0], ":")
+	host := addr[0]
+	port, err := strconv.ParseInt(addr[1], 10, 16)
 	if err != nil {
 		panic(err)
 	}
@@ -97,7 +104,7 @@ func NewWorker(id uint64) (*Worker, error) {
 		host:       host,
 		port:       uint16(port),
 		peers:      make(map[uint64]*Peer),
-		sendQueue:  make(chan sendHandle, 128),
+		sendQueue:  make(chan sendHandle, 128*128),
 		recvQueue:  make(map[Opcode]receiveHandle),
 		round:      0,
 		g:          g,
@@ -131,7 +138,7 @@ func NewWorker(id uint64) (*Worker, error) {
 		lock:make(chan struct {}, 1),
 	}
 	worker.recvQueue[opcodeIncEvalUpdate] =  receiveHandle{
-		hub: make(chan Message, 128),
+		hub: make(chan Message, 1024*1024),
 		lock:make(chan struct {}, 1),
 	}
 	worker.recvQueue[opcodeNotifyInactive] =  receiveHandle{
@@ -342,10 +349,10 @@ func (w *Worker) DisconnectAsync(peer *Peer) <-chan struct{} {
 
 func (w *Worker) Run() {
 
-	log.Printf("fif: %+v", w.fif)
-	log.Printf("fit: %+v", w.fit)
-	log.Printf("fof: %+v", w.fof)
-	log.Printf("fot: %+v", w.fot)
+	//log.Printf("fif: %+v", w.fif)
+	//log.Printf("fit: %+v", w.fit)
+	//log.Printf("fof: %+v", w.fof)
+	//log.Printf("fot: %+v", w.fot)
 
 	msg := <-w.Receive(opcodePEvalRequest)
 	mid := msg.(MessagePEvalRequest).from
@@ -358,7 +365,7 @@ func (w *Worker) Run() {
 	log.Info().Msg("----- START PEVAL -----")
 	var updateMap map[int64]float64
 	w.shortest, updateMap = path.PEvalDijkstraFrom(w.g.Vertex(0), w.g)
-	log.Info().Msgf("PEval: %v, update=%v", w.shortest.WeightToAllVertices(), updateMap)
+	//log.Info().Msgf("PEval: %v, update=%v", w.shortest.WeightToAllVertices(), updateMap)
 
 	// TODO: updateで回すのがおかしい
 	for vid, dist := range updateMap {
@@ -380,11 +387,11 @@ func (w *Worker) Run() {
 			}); err != nil {
 				panic(err)
 			}
-			log.Info().Msgf("-> Send update message to worker %d", peer.id)
+			//log.Info().Msgf("-> Send update message to worker %d", peer.id)
 		}
 	}
 
-	ticker := time.NewTicker(5 * time.Nanosecond)
+	ticker := time.NewTicker(2 * time.Second)
 IncrementalEvaluation:
 	for {
 		select {
@@ -411,12 +418,12 @@ IncrementalEvaluation:
 
 			for len(incCh) > 0 {
 				msg := <-incCh
-				from := msg.(MessageIncEvalUpdate).from
+				//from := msg.(MessageIncEvalUpdate).from
 				round := msg.(MessageIncEvalUpdate).round
 				vid := msg.(MessageIncEvalUpdate).vid
 				dist := msg.(MessageIncEvalUpdate).dist
-				log.Info().Msgf(" + from=%d, round=%d, vid=%d, dist=%f",
-					from, round, vid, dist)
+				//log.Info().Msgf(" + from=%d, round=%d, vid=%d, dist=%f",
+				//	from, round, vid, dist)
 				if min > round {
 					min = round
 				}
@@ -435,7 +442,8 @@ IncrementalEvaluation:
 			log.Info().Msgf("min: %d", min)
 			log.Info().Msgf("now: %d", w.round)
 			updateMap = path.IncEvalDijkstraFrom(updateMap, &w.shortest, simple.NewVertex(0), w.g)
-			log.Info().Msgf("IncEval #%d: %v, update=%v", w.round, w.shortest.WeightToAllVertices(), updateMap)
+			//log.Info().Msgf("IncEval #%d: %v, update=%v", w.round, w.shortest.WeightToAllVertices(), updateMap)
+			log.Info().Msgf("IncEval #%d, #updates: %d", w.round, len(updateMap))
 
 			for vid, dist := range updateMap {
 				if pid, ok := w.fot[w.g.Vertex(vid)]; ok {
@@ -456,7 +464,7 @@ IncrementalEvaluation:
 					}); err != nil {
 						panic(err)
 					}
-					log.Info().Msgf("-> Send update message to worker %d", peer.id)
+					//log.Info().Msgf("-> Send update message to worker %d", peer.id)
 				}
 			}
 
